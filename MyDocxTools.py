@@ -12,8 +12,6 @@ from itertools import accumulate
 
 from typing import NewType, Iterable
 
-from Lib.MyOverload import my_overload
-
 import re
 
 
@@ -161,8 +159,7 @@ def get_font_name(object: CT_Fonts | CT_R | Font | Run, language: Language) -> s
     else:
         raise ValueError("language must be c, e, a, or o.\n(stands for chinese, english, arabic or others respectively)")
 
-@my_overload
-def set_font_name(object: CT_Fonts | CT_R | Font | Run, new_font_name: str, language: Language = ENGLISH) -> CT_Fonts:
+def set_font_name(object: CT_Fonts | CT_R | Font | Run, new_font_name: str | dict[str], language: Language = ENGLISH) -> CT_Fonts:
     """
     set font name of object.
     
@@ -188,58 +185,33 @@ def set_font_name(object: CT_Fonts | CT_R | Font | Run, new_font_name: str, lang
     Returns:
         CT_Fonts: the rFont object after its font name set.
     """  
-    
-    if isinstance(object, Font):
-        rFont = object._element.rPr.get_or_add_rFonts()
-    elif isinstance(object, CT_R):
-        rFont = object.rPr.get_or_add_rFonts()
-    elif isinstance(object, Run):
-        rFont = object._element.rPr.get_or_add_rFonts()
-        
-    if language == CHINESE:
-        return rFont.set(qn('w:eastAsia'), new_font_name)
-    elif language == ENGLISH:
-        return rFont.set(qn('w:ascii'), new_font_name)
-    elif language == ARABIC:
-        return rFont.set(qn('w:cs'), new_font_name)
-    elif language == OTHERS:
-        return rFont.set(qn('w:hAnsi'), new_font_name)
-    else:
-        raise ValueError("language must be c, e, a, or o.\n(stands for chinese, english, arabic or others respectively)")
+    if isinstance(new_font_name, dict):
+        replace_font_dict = new_font_name
+        old_font_name = get_font_name(object, language)
+        if old_font_name is None: return None
+        if old_font_name in replace_font_dict.keys():
+            new_font_name = replace_font_dict[old_font_name]
+            return set_font_name(object, new_font_name, language)
+        return None
+    elif isinstance(new_font_name, str):
+        if isinstance(object, Font):
+            rFont = object._element.rPr.get_or_add_rFonts()
+        elif isinstance(object, CT_R):
+            rFont = object.rPr.get_or_add_rFonts()
+        elif isinstance(object, Run):
+            rFont = object._element.rPr.get_or_add_rFonts()
+            
+        if language == CHINESE:
+            return rFont.set(qn('w:eastAsia'), new_font_name)
+        elif language == ENGLISH:
+            return rFont.set(qn('w:ascii'), new_font_name)
+        elif language == ARABIC:
+            return rFont.set(qn('w:cs'), new_font_name)
+        elif language == OTHERS:
+            return rFont.set(qn('w:hAnsi'), new_font_name)
+        else:
+            raise ValueError("language must be c, e, a, or o.\n(stands for chinese, english, arabic or others respectively)")
 
-@my_overload
-def set_font_name(object: CT_Fonts | CT_R | Font | Run, replace_font_dict: dict[str], language: Language = ENGLISH) -> CT_Fonts:
-    """
-    set font name of object.
-    
-    In a rFont object,
-    it can obtain 4 kinds of fonts, each for 1 of the following 4 languages:
-    english, chinese, arabics, other languages.
-    
-    to set english font name, input "e" (or ENGLISH if you import * from DocxTools) in language arg.
-    likewise,
-    for chinese font name, input "c" (or CHINESE);
-    for arabic  font name, input "a" (or ARABIC);
-    for others  font name, input "o" (or OTHERS).
-
-    Args:
-        object (CT_Fonts | CT_R | Font | Run): the rFont object whose font name u want to set.
-        language (str): the language whose font name u want to set.
-
-    Raises:
-        ValueError: wrong language arg.
-
-    Returns:
-        CT_Fonts: the rFont object after its font name set.
-    """    
-    
-    old_font_name = get_font_name(object, language)
-    if old_font_name is None: return None
-    if old_font_name in replace_font_dict.keys():
-        new_font_name = replace_font_dict[old_font_name]
-        return set_font_name(object, new_font_name, language)
-    return None
-    
 def isolate_para_runs_by_span(paragraph: Paragraph | CT_P, 
                            span: Iterable[int]) -> tuple[int, int]:
     """
@@ -292,71 +264,52 @@ def isolate_para_runs_by_span(paragraph: Paragraph | CT_P,
     
     return trim_start_run, trim_end_run
 
-@my_overload
-def find_and_replace(paragraph: CT_P, finds: Iterable[str] | str, replaces: Iterable[str] | str) -> None:
+def find_and_replace(paragraph_or_body: CT_P, finds: Iterable[str] | str, replaces: Iterable[str] | str) -> None:
     """
     You know... find and replace, from microsoft document.
     Just trying to replicate it with python-docx.
 
     Args:
-        paragraph or body (CT_P | Paragraph | Document): the paragraph/document to undergo find and replace.
+        paragraph_or_body (CT_P | Paragraph | Document): the paragraph/document to undergo find and replace.
         finds (Iterable[str] | str):      find the strings from this list in the paragraph/document ...
         replaces (Iterable[str] | str):   and replace with the corresponding strings in this list.
-    """    
-    para_text = paragraph.text
-    
-    if isinstance(finds, str):
-        finds = [finds]
-    if isinstance(replaces, str):
-        replaces = [replaces]
-      
-    for find_text, replace_text in list(zip(finds, replaces)):
-        
-        matches = list(re.finditer(find_text, para_text))
-        if matches == []: continue
-
-        spans = [k.span() for k in matches]                  # e.g. if pattern = "a", text = "abc", then span = (0, 1)
-        
-        for span in spans[::-1]:
-            trim_start_run, trim_end_run = isolate_para_runs_by_span(paragraph, span)
-            set_run_text(paragraph.r_lst[trim_start_run], replace_text)
-            for run in paragraph.r_lst[trim_start_run + 1: trim_end_run][::-1]:
-                remove_run(run)
-    
-        matches = list(re.finditer("®", para_text))
-        if matches == []: continue
-        
-        spans = [k.span() for k in matches]                  # e.g. if pattern = "a", text = "abc", then span = (0, 1)
-        
-        for span in spans[::-1]:
-            trim_start_run, trim_end_run = isolate_para_runs_by_span(paragraph, span)
-            for run in paragraph.r_lst[trim_start_run: trim_end_run]:
-                rPr = run.get_or_add_rPr()
-                rPr.superscript = True
-
-@my_overload
-def find_and_replace(document: Document, finds: Iterable[str] | str, replaces: Iterable[str] | str) -> None:
     """
-    You know... find and replace, from microsoft document.
-    Just trying to replicate it with python-docx.
+    if isinstance(paragraph_or_body, Document):
+        document = paragraph_or_body
+        for paragraph in document._element.iterfind(".//" + qn("w:p")):
+            find_and_replace(paragraph, finds, replaces)
+    elif isinstance(paragraph_or_body, Paragraph):
+        paragraph = paragraph_or_body
+        find_and_replace(paragraph._element, finds, replaces)
+    elif isinstance(paragraph_or_body, CT_P):
+        paragraph = paragraph_or_body
+        para_text = paragraph.text
+        
+        if isinstance(finds, str):
+            finds = [finds]
+        if isinstance(replaces, str):
+            replaces = [replaces]
+        
+        for find_text, replace_text in list(zip(finds, replaces)):
+            
+            matches = list(re.finditer(find_text, para_text))
+            if matches == []: continue
 
-    Args:
-        paragraph or body (CT_P | Paragraph | Document): the paragraph/document to undergo find and replace.
-        finds (Iterable[str] | str):      find the strings from this list in the paragraph/document ...
-        replaces (Iterable[str] | str):   and replace with the corresponding strings in this list.
-    """  
-    for paragraph in document._element.iterfind(".//" + qn("w:p")):
-        find_and_replace(paragraph, finds, replaces)
-
-@my_overload
-def find_and_replace(paragraph: Paragraph, finds: Iterable[str], replaces: Iterable[str]) -> None:
-    """
-    You know... find and replace, from microsoft document.
-    Just trying to replicate it with python-docx.
-
-    Args:
-        paragraph or body (CT_P | Paragraph | Document): the paragraph/document to undergo find and replace.
-        finds (Iterable[str] | str):      find the strings from this list in the paragraph/document ...
-        replaces (Iterable[str] | str):   and replace with the corresponding strings in this list.
-    """  
-    find_and_replace(paragraph._element, finds, replaces)
+            spans = [k.span() for k in matches]                  # e.g. if pattern = "a", text = "abc", then span = (0, 1)
+            
+            for span in spans[::-1]:
+                trim_start_run, trim_end_run = isolate_para_runs_by_span(paragraph, span)
+                set_run_text(paragraph.r_lst[trim_start_run], replace_text)
+                for run in paragraph.r_lst[trim_start_run + 1: trim_end_run][::-1]:
+                    remove_run(run)
+        
+            matches = list(re.finditer("®", para_text))
+            if matches == []: continue
+            
+            spans = [k.span() for k in matches]                  # e.g. if pattern = "a", text = "abc", then span = (0, 1)
+            
+            for span in spans[::-1]:
+                trim_start_run, trim_end_run = isolate_para_runs_by_span(paragraph, span)
+                for run in paragraph.r_lst[trim_start_run: trim_end_run]:
+                    rPr = run.get_or_add_rPr()
+                    rPr.superscript = True
