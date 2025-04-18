@@ -5,7 +5,7 @@ from docx.oxml.text.paragraph import CT_P
 from docx.text.paragraph import Paragraph
 from docx.text.run import Run
 from docx.text.font import Font
-from docx.document import Document
+from docx.document import Document as Document_Type
 
 from bisect import bisect_left
 from itertools import accumulate
@@ -222,7 +222,7 @@ def isolate_para_runs_by_span(paragraph: Paragraph | CT_P,
     
     For example:
     
-    The given paragraph like this:
+    I have a paragraph like this:
     string index                                                  0 1 2 3 4 5 6 7 8 9 10 
     paragraph text (separated into runs, indicated by |)          H e l|l o   W|o r l d
     run index                                                       0      1       2
@@ -232,7 +232,7 @@ def isolate_para_runs_by_span(paragraph: Paragraph | CT_P,
     string index                                                  0 1 2 3 4 5 6 7 8 9 10
     paragraph text (separated into runs, indicated by |)          H e l|l|o   W|o|r l d
     run index                                                       0   1   2   3   4
-    and (3, 5) will be returned, which indicates paragraph.runs[2:4] contains the isolated text "o Wo".
+    and (2, 4) will be returned, which indicates paragraph.runs[2:4] contains the isolated text "o Wo".
 
     Args:
         para_element (Paragraph | CT_P): paragraph to be split
@@ -264,17 +264,47 @@ def isolate_para_runs_by_span(paragraph: Paragraph | CT_P,
     
     return trim_start_run, trim_end_run
 
-def find_and_replace(paragraph_or_body: CT_P, finds: Iterable[str] | str, replaces: Iterable[str] | str) -> None:
+def find(paragraph: CT_P, find: str) -> list[tuple[int, int]]:
+    """
+    Find text in paragraph.
+    
+    First it finds the given texts in paragraph with regular expression.
+    Then will isolate the found texts in the paragraph such that there exists runs that contain and only contain the found text (for details view MyDocxTools.isolate_para_runs_by_span).
+    Finally return list of spans of the runs that contains the found text. length of the list equals to the number of occurance of the found text in the paragraph.
+
+    Args:
+        paragraph (CT_P): the paragraph to find text from
+        find (str): the found text
+
+    Returns:
+        list[tuple[int, int]]: _description_
+    """    
+    para_text = paragraph.text
+    matches = list(re.finditer(find, para_text))
+    if matches == []: return []
+
+    spans = [k.span() for k in matches]                  # e.g. if pattern = "a", text = "abc", then span = (0, 1)
+    
+    for i, span in enumerate(spans):
+        spans[i] = isolate_para_runs_by_span(paragraph, span)
+        
+    return spans
+
+def find_and_replace(paragraph_or_body: CT_P, finds: Iterable[str] | str, replaces: Iterable[str] | str, replaced_font: None) -> None:
     """
     You know... find and replace, from microsoft document.
     Just trying to replicate it with python-docx.
+    
+    Regular expression compatible.
+    
+    The font of the replaced text is inherited from the first run in the found text.
 
     Args:
         paragraph_or_body (CT_P | Paragraph | Document): the paragraph/document to undergo find and replace.
         finds (Iterable[str] | str):      find the strings from this list in the paragraph/document ...
         replaces (Iterable[str] | str):   and replace with the corresponding strings in this list.
     """
-    if isinstance(paragraph_or_body, Document):
+    if isinstance(paragraph_or_body, Document_Type):
         document = paragraph_or_body
         for paragraph in document._element.iterfind(".//" + qn("w:p")):
             find_and_replace(paragraph, finds, replaces)
@@ -282,8 +312,7 @@ def find_and_replace(paragraph_or_body: CT_P, finds: Iterable[str] | str, replac
         paragraph = paragraph_or_body
         find_and_replace(paragraph._element, finds, replaces)
     elif isinstance(paragraph_or_body, CT_P):
-        paragraph = paragraph_or_body
-        para_text = paragraph.text
+        paragraph = paragraph_or_body\
         
         if isinstance(finds, str):
             finds = [finds]
@@ -291,25 +320,17 @@ def find_and_replace(paragraph_or_body: CT_P, finds: Iterable[str] | str, replac
             replaces = [replaces]
         
         for find_text, replace_text in list(zip(finds, replaces)):
-            
-            matches = list(re.finditer(find_text, para_text))
-            if matches == []: continue
 
-            spans = [k.span() for k in matches]                  # e.g. if pattern = "a", text = "abc", then span = (0, 1)
+            spans = find(paragraph, find_text)
             
-            for span in spans[::-1]:
-                trim_start_run, trim_end_run = isolate_para_runs_by_span(paragraph, span)
+            for trim_start_run, trim_end_run in spans[::-1]:
                 set_run_text(paragraph.r_lst[trim_start_run], replace_text)
                 for run in paragraph.r_lst[trim_start_run + 1: trim_end_run][::-1]:
                     remove_run(run)
-        
-            matches = list(re.finditer("®", para_text))
-            if matches == []: continue
-            
-            spans = [k.span() for k in matches]                  # e.g. if pattern = "a", text = "abc", then span = (0, 1)
-            
-            for span in spans[::-1]:
-                trim_start_run, trim_end_run = isolate_para_runs_by_span(paragraph, span)
-                for run in paragraph.r_lst[trim_start_run: trim_end_run]:
-                    rPr = run.get_or_add_rPr()
-                    rPr.superscript = True
+                    
+
+if __name__ == "__main__":
+    from docx import Document
+    
+    document = Document(r"../test.docx")
+    print()
