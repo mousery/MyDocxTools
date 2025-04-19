@@ -21,6 +21,8 @@ ENGLISH = Language("e")
 ARABIC  = Language("a")
 OTHERS  = Language("o")
 
+Span = tuple[int, int]
+
 def set_run_text(run_element: CT_R | Run, text: str) -> CT_R:
     """
     set the text of run_element to text
@@ -212,6 +214,11 @@ def set_font_name(object: CT_Fonts | CT_R | Font | Run, new_font_name: str | dic
         else:
             raise ValueError("language must be c, e, a, or o.\n(stands for chinese, english, arabic or others respectively)")
 
+def find_reference_in_repl(repl: str) -> list[tuple[Span, str]]:
+    pattern = re.compile(r"(?P<whole>\\(?P<nameORnumber>(?:\d+)|(?:g<\w+>)))")
+    matches = list(pattern.finditer(repl))
+    return [(m.span, m.groupdict()['nameORnumber']) for m in matches]
+
 def isolate_para_runs_by_span(paragraph: Paragraph | CT_P, 
                            span: Iterable[int]) -> tuple[int, int]:
     """
@@ -264,7 +271,7 @@ def isolate_para_runs_by_span(paragraph: Paragraph | CT_P,
     
     return trim_start_run, trim_end_run
 
-def find(paragraph: CT_P, find: str) -> list[tuple[int, int]]:
+def find(paragraph: CT_P, find: str) -> tuple[list[Span], list[list[Span]], list[re.Match[str]]]:
     """
     Find text in paragraph.
     
@@ -277,18 +284,37 @@ def find(paragraph: CT_P, find: str) -> list[tuple[int, int]]:
         find (str): the found text
 
     Returns:
-        list[tuple[int, int]]: _description_
+        list[Span]: list of spans of the runs that contains the found text.
+        list[list[Span]]]: In the second layer of list, which contain Spans, \
+                           element at index 0 equals to the corresponding Span in the previous returned list[Span], \
+                           which matches the whole regex expression, \
+                           and the other elements at index > 0 matches corresponding captured group existing in the regex pattern. \
+                           length of this list[0] == number of captured group existing in the regex pattern + 1.
+        list[re.Match[str]]: list of the match object
     """    
     para_text = paragraph.text
     matches = list(re.finditer(find, para_text))
     if matches == []: return []
 
     spans = [k.span() for k in matches]                  # e.g. if pattern = "a", text = "abc", then span = (0, 1)
+    try:
+        groups = [list(k.regs) for k in matches]
+    except:
+        groups = []
     
     for i, span in enumerate(spans):
-        spans[i] = isolate_para_runs_by_span(paragraph, span)
+        span = isolate_para_runs_by_span(paragraph, span)
         
-    return spans
+        prev_span_run_n = paragraph.r_lst.__len__()
+        for ig, group in enumerate(groups)[1:]:
+            groups[ig] = isolate_para_runs_by_span(paragraph, group)
+        shift = paragraph.r_lst.__len__() - prev_span_run_n
+        
+        span = (span[0], span[1] + shift)
+        spans[i] = span
+        groups[i][0] = spans[i]
+          
+    return spans, groups, matches
 
 def find_and_replace(paragraph_or_body: CT_P, finds: Iterable[str] | str, replaces: Iterable[str] | str, replaced_font: None) -> None:
     """
@@ -320,12 +346,45 @@ def find_and_replace(paragraph_or_body: CT_P, finds: Iterable[str] | str, replac
             replaces = [replaces]
         
         for find_text, replace_text in list(zip(finds, replaces)):
-
-            spans = find(paragraph, find_text)
             
-            for trim_start_run, trim_end_run in spans[::-1]:
-                set_run_text(paragraph.r_lst[trim_start_run], replace_text)
-                for run in paragraph.r_lst[trim_start_run + 1: trim_end_run][::-1]:
+            repl_captured_groups = find_reference_in_repl(replace_text)
+            
+            repl_sections_names = [None]    
+            repl_sections_starts = [0]
+            # After the following for loop, repl_sections_names shall write down the names of the referenced groups that split the repl string into sections,
+            # in the order of occurance in the repl, and shall write down None if no referenced group is in the section,
+            # and repl_sections_starts shall drop down the start of each sections. Start of each section should also be the end of previous section.
+            for repl_captured_group in repl_captured_groups:
+                repl_group_span = repl_captured_group[0]
+                repl_group_start = repl_group_span[0]
+                repl_group_end = repl_group_span[1]
+                repl_group_name = repl_captured_group[1]
+                
+                if repl_group_start == repl_sections_starts[-1]:
+                    repl_sections_names[-1] = repl_group_name
+                else:
+                    repl_sections_names.append(repl_group_name)
+                    repl_sections_starts.append(repl_group_start)
+                    
+                repl_sections_names.append(None)
+                repl_sections_starts.append(repl_group_end)
+            repl_sections_ends = repl_sections_starts[1:] + len(replace_text)
+            
+            # Isolate all find_text and groups in paragraph
+            spans, groups, matches = find(paragraph, find_text)
+            
+            for i_spans in range(len(spans))[::-1]:
+                match = matches[i_spans]
+                run_span_start, run_span_end = spans[i_spans]
+                # groups_rPrs = [paragraph.r_lst[trim_start_run].rPr] + \
+                #               [paragraph.r_lst[groups_start_run].rPr for groups_start_run in groups[i_spans][1:]]
+                
+                              
+                set_run_text(paragraph.r_lst[run_span_start], match.expand(replace_text))
+                
+                # Remove unneeded runs
+                run_to_remove = paragraph.r_lst[run_span_start + 1: run_span_end]
+                for run in run_to_remove:
                     remove_run(run)
                     
 
