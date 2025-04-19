@@ -1,6 +1,6 @@
 from docx.oxml.ns import qn
 from docx.oxml.text.run import CT_R
-from docx.oxml.text.font import CT_Fonts
+from docx.oxml.text.font import CT_Fonts, CT_RPr
 from docx.oxml.text.paragraph import CT_P
 from docx.text.paragraph import Paragraph
 from docx.text.run import Run
@@ -37,7 +37,7 @@ def set_run_text(run_element: CT_R | Run, text: str) -> CT_R:
     run_element.text = text
     return run_element
 
-def add_run_after_run(added_run: CT_R | Run | str, after_this_run: CT_R | Run) -> CT_R:
+def add_run_after_run(added_run: CT_R | Run | str, after_this_run: CT_R | Run, added_run_rPr: CT_RPr | Font | None = None) -> CT_R:
     """
     add the run "added_run" after the run "after_this_run".
     
@@ -46,8 +46,9 @@ def add_run_after_run(added_run: CT_R | Run | str, after_this_run: CT_R | Run) -
     has the same font as "after_this_run" and text from the string "added_run".
 
     Args:
-        added_run (CT_R | Run | str): added run or added text/string
+        added_run (CT_R | Run | str): added run or added text/string. if it is str and added_run_rPr type is not CT_RPr, font is inherited from after_this_run.
         after_this_run (CT_R | Run): the added_run will be added next to this run
+        added_run_rPr (CT_RPr | Font | None): the wanted font for added_run. if None, font will be inherited from added_run, or from after_this_run only if added_run is str.
     
     Returns:
         added_run (CT_R): added run
@@ -59,6 +60,11 @@ def add_run_after_run(added_run: CT_R | Run | str, after_this_run: CT_R | Run) -
         
     if isinstance(after_this_run, Run):
         after_this_run = after_this_run._element
+    
+    if isinstance(added_run_rPr, CT_RPr):
+        added_run.replace(added_run.get_or_add_rPr(), added_run_rPr)
+    elif isinstance(added_run_rPr, Font):
+        added_run.replace(added_run.get_or_add_rPr(), added_run_rPr._element.rPr)
     
     after_this_run.addnext(added_run.__deepcopy__(""))
     
@@ -214,10 +220,10 @@ def set_font_name(object: CT_Fonts | CT_R | Font | Run, new_font_name: str | dic
         else:
             raise ValueError("language must be c, e, a, or o.\n(stands for chinese, english, arabic or others respectively)")
 
-def find_reference_in_repl(repl: str) -> list[tuple[Span, str]]:
+def find_reference_in_repl(repl: str) -> list[tuple[Span, str, re.Match[str]]]:
     pattern = re.compile(r"(?P<whole>\\(?P<nameORnumber>(?:\d+)|(?:g<\w+>)))")
     matches = list(pattern.finditer(repl))
-    return [(m.span, m.groupdict()['nameORnumber']) for m in matches]
+    return [(m.span(), m.groupdict()['nameORnumber'], m) for m in matches]
 
 def isolate_para_runs_by_span(paragraph: Paragraph | CT_P, 
                            span: Iterable[int]) -> tuple[int, int]:
@@ -285,16 +291,18 @@ def find(paragraph: CT_P, find: str) -> tuple[list[Span], list[list[Span]], list
 
     Returns:
         list[Span]: list of spans of the runs that contains the found text.
+        
         list[list[Span]]]: In the second layer of list, which contain Spans, \
                            element at index 0 equals to the corresponding Span in the previous returned list[Span], \
                            which matches the whole regex expression, \
                            and the other elements at index > 0 matches corresponding captured group existing in the regex pattern. \
                            length of this list[0] == number of captured group existing in the regex pattern + 1.
+                           
         list[re.Match[str]]: list of the match object
     """    
     para_text = paragraph.text
     matches = list(re.finditer(find, para_text))
-    if matches == []: return []
+    if matches == []: return [], [], []
 
     spans = [k.span() for k in matches]                  # e.g. if pattern = "a", text = "abc", then span = (0, 1)
     try:
@@ -303,20 +311,29 @@ def find(paragraph: CT_P, find: str) -> tuple[list[Span], list[list[Span]], list
         groups = []
     
     for i, span in enumerate(spans):
-        span = isolate_para_runs_by_span(paragraph, span)
+        span = isolate_para_runs_by_span(paragraph, span)    
+        
+        # poss_groups_names = list(matches[i].groupdict.keys())
+        # poss_groups_spans = [matches[i].span(n) for n in poss_groups_names]
+        # groups_names = []
         
         prev_span_run_n = paragraph.r_lst.__len__()
-        for ig, group in enumerate(groups)[1:]:
-            groups[ig] = isolate_para_runs_by_span(paragraph, group)
+        for ig, group in enumerate(groups[i][1:], start=1):
+            # try:
+            #     group_name = poss_groups_names[poss_groups_spans.index(group)]
+            #     groups_names.append(group_name)
+            # except:
+            #     groups_names.append(None)
+            groups[i][ig] = isolate_para_runs_by_span(paragraph, group)
         shift = paragraph.r_lst.__len__() - prev_span_run_n
         
         span = (span[0], span[1] + shift)
         spans[i] = span
         groups[i][0] = spans[i]
           
-    return spans, groups, matches
+    return spans, groups, matches #, groups_names
 
-def find_and_replace(paragraph_or_body: CT_P, finds: Iterable[str] | str, replaces: Iterable[str] | str, replaced_font: None) -> None:
+def find_and_replace(paragraph_or_body: CT_P, finds: Iterable[str] | str, replaces: Iterable[str] | str, replaced_font: CT_RPr | Font | None = None) -> None:
     """
     You know... find and replace, from microsoft document.
     Just trying to replicate it with python-docx.
@@ -349,7 +366,8 @@ def find_and_replace(paragraph_or_body: CT_P, finds: Iterable[str] | str, replac
             
             repl_captured_groups = find_reference_in_repl(replace_text)
             
-            repl_sections_names = [None]    
+            repl_sections_names: list[None | str] = [None]
+            repl_sections_matches: list[re.Match] = [None]
             repl_sections_starts = [0]
             # After the following for loop, repl_sections_names shall write down the names of the referenced groups that split the repl string into sections,
             # in the order of occurance in the repl, and shall write down None if no referenced group is in the section,
@@ -359,31 +377,62 @@ def find_and_replace(paragraph_or_body: CT_P, finds: Iterable[str] | str, replac
                 repl_group_start = repl_group_span[0]
                 repl_group_end = repl_group_span[1]
                 repl_group_name = repl_captured_group[1]
+                repl_group_match = repl_captured_group[2]
                 
                 if repl_group_start == repl_sections_starts[-1]:
                     repl_sections_names[-1] = repl_group_name
                 else:
                     repl_sections_names.append(repl_group_name)
+                    repl_sections_matches.append(repl_group_match)
                     repl_sections_starts.append(repl_group_start)
                     
                 repl_sections_names.append(None)
+                repl_sections_matches.append(None)
                 repl_sections_starts.append(repl_group_end)
-            repl_sections_ends = repl_sections_starts[1:] + len(replace_text)
+            repl_sections_ends = repl_sections_starts[1:] + [len(replace_text)]
             
             # Isolate all find_text and groups in paragraph
-            spans, groups, matches = find(paragraph, find_text)
+            spans, groupss, matches = find(paragraph, find_text)
+            
+            if matches:
+                groupindex = matches[0].re.groupindex
             
             for i_spans in range(len(spans))[::-1]:
                 match = matches[i_spans]
+                groups = groupss[i_spans]
                 run_span_start, run_span_end = spans[i_spans]
-                # groups_rPrs = [paragraph.r_lst[trim_start_run].rPr] + \
-                #               [paragraph.r_lst[groups_start_run].rPr for groups_start_run in groups[i_spans][1:]]
                 
-                              
-                set_run_text(paragraph.r_lst[run_span_start], match.expand(replace_text))
+                # find the rPr of the first run in the span that is not in one of the groups
+                # if no such run, give None
+                fr = run_span_start
+                first_normal_run_rPr = None
+                for group in groups:
+                    if group[0] == fr:
+                        fr = group[1]
+                    else:
+                        first_normal_run_rPr = paragraph.r_lst[fr].rPr
+                        break
+                
+                groups_rPr = [first_normal_run_rPr] + \
+                             [paragraph.r_lst[run_group_start].rPr for run_group_start, _ in groups[1:]]
                 
                 # Remove unneeded runs
-                run_to_remove = paragraph.r_lst[run_span_start + 1: run_span_end]
+                run_to_remove = paragraph.r_lst[run_span_start: run_span_end]
+                
+                prev_run = paragraph.r_lst[run_span_start]
+                for i, section_name in enumerate(repl_sections_names):
+                    repl_section_string = replace_text[repl_sections_starts[i]: repl_sections_ends[i]]
+                    repl_section_string = match.expand(repl_section_string)
+                    
+                    if section_name is None:
+                        add_run_after_run(repl_section_string, prev_run, first_normal_run_rPr)
+                    elif section_name.isnumeric():    
+                        add_run_after_run(repl_section_string, prev_run, groups_rPr[int(section_name)])
+                    else:
+                        i_groups = groupindex[section_name]
+                        group_rPr = groups_rPr[i_groups]
+                        add_run_after_run(repl_section_string, prev_run, group_rPr)  # TODO change rPr to corresponding groups rPr
+                
                 for run in run_to_remove:
                     remove_run(run)
                     
@@ -392,4 +441,5 @@ if __name__ == "__main__":
     from docx import Document
     
     document = Document(r"../test.docx")
-    print()
+    find_and_replace(document, "(丹尼遜)(健腦操)(®)", r"\1\3\2")
+    document.save(r"../output.docx")
